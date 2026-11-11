@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.8, maximum-scale=2.0, user-scalable=yes">
 <title>天气 - {{LOCATION}}</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="theme-color" content="#fdfdfc">
@@ -25,6 +25,8 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* 只挡横向：内容按最长行缩过，纵向往常滚动 */
+  overflow-x: hidden;
 }
 body {
   margin: 0;
@@ -36,11 +38,10 @@ body {
 pre {
   margin: 0;
   font-family: {{FONT_STACK}};
-  /* 等宽字体一格 = 0.5em，按最长行 {{CELLS}} 格缩放到可用宽度，避免横向滚动 */
-  font-size: clamp(8px, calc((100vw - 2 * var(--pad)) / {{HALF_CELLS}}), 13px);
+  /* 保守字号：默认按最长行 {{CELLS}} 格塞进屏宽就算过，看不清自己双指放大（浏览器原生缩放） */
+  font-size: clamp(9px, calc((100vw - 2 * var(--pad)) / {{HALF_CELLS}}), 12px);
   line-height: 1.25;
   white-space: pre;
-  overflow-x: hidden;
   font-variant-ligatures: none;
 }
 footer {
@@ -75,7 +76,6 @@ footer a {
   const note = document.getElementById('note');
   // Chrome 只在安全上下文（HTTPS 或 localhost）允许定位，HTTP + 局域网 IP 会被静默拒绝
   const SECURE = window.isSecureContext !== false;
-  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
 
   const setNote = (text) => { note.textContent = text ? ' · ' + text : ''; };
   if (!SECURE) setNote('定位需 HTTPS');
@@ -91,10 +91,8 @@ footer a {
   const keyOf = (loc) => snap(loc.lng) + ',' + snap(loc.lat) + ',' + DAYS;
   const fresh = (item) => item && Date.now() - item.at < TTL;
 
-  // 报告文字宽度随城市变化，按格数重算字号
-  const apply = (text, cells, name) => {
+  const apply = (text, name) => {
     pre.textContent = text;
-    pre.style.fontSize = 'clamp(8px, calc((100vw - 2 * var(--pad)) / ' + (cells / 2).toFixed(1) + '), 13px)';
     if (name) {
       locLabel.textContent = name;
       document.title = '天气 - ' + name;
@@ -105,9 +103,8 @@ footer a {
     const resp = await fetch('/text?lng=' + snap(loc.lng) + '&lat=' + snap(loc.lat) + '&days=' + DAYS, { headers: { Accept: 'text/plain' } });
     if (!resp.ok) return false;
     const text = await resp.text();
-    const cells = Number(resp.headers.get('X-Cells')) || 64;
-    apply(text, cells, loc.name);
-    write(REPORT_KEY, { key: keyOf(loc), text, cells, at: Date.now() });
+    apply(text, loc.name);
+    write(REPORT_KEY, { key: keyOf(loc), text, at: Date.now() });
     return true;
   };
 
@@ -117,7 +114,7 @@ footer a {
     write(LOC_KEY, { ...loc, at: Date.now() });
     const cached = read(REPORT_KEY);
     if (cached && cached.key === keyOf(loc) && fresh(cached)) {
-      apply(cached.text, cached.cells, loc.name);
+      apply(cached.text, loc.name);
       return;
     }
     await fetchText(loc);

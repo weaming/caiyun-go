@@ -51,4 +51,9 @@ make once ARGS='-days 3'; make serve ADDR=:1314
 2. `POST https://h5.caiyunapp.com/api/`，body `{"url","method"}`，服务端替换 `<t2.5>` token 后转发。
 3. 只调 `/v2.5/<t2.5>/{lng},{lat}/weather`，一次拿 realtime/hourly/daily/alert。
 
-页面用 `font-size: clamp(8px, (100vw - 2*pad) / 半格数, 13px)` 按最长行的显示格数自适应，PC/手机都不横向滚动。
+正文用 `font-size: clamp(9px, (100vw - 2*pad) / 半格数, 12px)`：手机上按最长行正好塞进屏宽（常见 9~11px，偏保守），
+桌面封顶 12px。页面不做自己的缩放逻辑，`user-scalable=yes` + `maximum-scale=4` 放开浏览器原生双指缩放，
+放大后的拖动由浏览器负责；`overflow-x: hidden` 兜底，任何情况都不出现横向滚动条。
+
+注意：iOS 微信（WKWebView）会按自己的字体档位重排 `font-size`，动态改字号（JS 逐帧设 `font-size`）会被它改回去，
+这类需求只能走 `transform` 缩放。
