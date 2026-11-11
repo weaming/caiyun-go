@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>天气 - {{LOCATION}}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="theme-color" content="#fdfdfc">
+<style>
+@font-face {
+  font-family: "Iosevka Web Code";
+  src: url("https://unpkg.com/@weaming/iosevka-custom@1.1.0/IosevkaWebCode/WOFF2/IosevkaWebCode-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+:root {
+  --pad: clamp(0.75rem, 3vw, 1.25rem);
+  --bg: #fdfdfc;
+  --fg: #222;
+  --muted: #8a8a86;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #17181a; --fg: #d8d8d6; --muted: #7d7d79; }
+}
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  margin: 0;
+  padding: var(--pad);
+  background: var(--bg);
+  color: var(--fg);
+  overflow-x: hidden;
+}
+pre {
+  margin: 0;
+  font-family: {{FONT_STACK}};
+  /* 等宽字体一格 = 0.5em，按最长行 {{CELLS}} 格缩放到可用宽度，避免横向滚动 */
+  font-size: clamp(8px, calc((100vw - 2 * var(--pad)) / {{HALF_CELLS}}), 13px);
+  line-height: 1.25;
+  white-space: pre;
+  overflow-x: hidden;
+  font-variant-ligatures: none;
+}
+footer {
+  margin-top: 0.9rem;
+  font-family: {{FONT_STACK}};
+  font-size: 11px;
+  color: var(--muted);
+}
+footer a {
+  color: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+</style>
+</head>
+<body>
+<pre id="report">{{BODY}}</pre>
+<footer>定位：<span id="loc">{{LOCATION}}</span> · <a id="relocate">使用当前定位</a><span id="note">{{LOC_NOTE}}</span></footer>
+<script>
+(() => {
+  // 两层缓存：位置与报告都落 localStorage，报告 TTL 与服务端一致（10 分钟）
+  const LOC_KEY = 'caiyun.location';
+  const REPORT_KEY = 'caiyun.report';
+  const TTL = {{TTL_MS}};
+  const LOC_TTL = {{TTL_MS}};      // 位置缓存同样 10 分钟
+  const MOVE_METERS = 500;         // 位移超过 500m 才认为换地方
+  const DAYS = {{DAYS}};
+  const DEFAULT = { lng: {{DEFAULT_LNG}}, lat: {{DEFAULT_LAT}}, name: {{DEFAULT_NAME_JSON}} };
+
+  const pre = document.getElementById('report');
+  const locLabel = document.getElementById('loc');
+  const note = document.getElementById('note');
+  // Chrome 只在安全上下文（HTTPS 或 localhost）允许定位，HTTP + 局域网 IP 会被静默拒绝
+  const SECURE = window.isSecureContext !== false;
+  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+  const setNote = (text) => { note.textContent = text ? ' · ' + text : ''; };
+  if (!SECURE) setNote('定位需 HTTPS');
+
+  const read = (key) => {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; }
+  };
+  const write = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* 隐私模式忽略 */ }
+  };
+  // 与服务端一致：坐标吸到 0.01°（约 1.1km）网格，小幅移动不换缓存
+  const snap = (value) => Math.round(value * 100) / 100;
+  const keyOf = (loc) => snap(loc.lng) + ',' + snap(loc.lat) + ',' + DAYS;
+  const fresh = (item) => item && Date.now() - item.at < TTL;
+
+  // 报告文字宽度随城市变化，按格数重算字号
+  const apply = (text, cells, name) => {
+    pre.textContent = text;
+    pre.style.fontSize = 'clamp(8px, calc((100vw - 2 * var(--pad)) / ' + (cells / 2).toFixed(1) + '), 13px)';
+    if (name) {
+      locLabel.textContent = name;
+      document.title = '天气 - ' + name;
+    }
+  };
+
+  const fetchText = async (loc) => {
+    const resp = await fetch('/text?lng=' + snap(loc.lng) + '&lat=' + snap(loc.lat) + '&days=' + DAYS, { headers: { Accept: 'text/plain' } });
+    if (!resp.ok) return false;
+    const text = await resp.text();
+    const cells = Number(resp.headers.get('X-Cells')) || 64;
+    apply(text, cells, loc.name);
+    write(REPORT_KEY, { key: keyOf(loc), text, cells, at: Date.now() });
+    return true;
+  };
+
+  const show = async (loc) => {
+    locLabel.textContent = loc.name || (loc.lng + ',' + loc.lat);
+    if (loc.name) document.title = '天气 - ' + loc.name;
+    write(LOC_KEY, { ...loc, at: Date.now() });
+    const cached = read(REPORT_KEY);
+    if (cached && cached.key === keyOf(loc) && fresh(cached)) {
+      apply(cached.text, cached.cells, loc.name);
+      return;
+    }
+    await fetchText(loc);
+  };
+
+  // 先看本机缓存，没有就用服务端渲染好的默认城市（深圳），一次请求都不发
+  const cachedLoc = read(LOC_KEY);
+  if (cachedLoc && cachedLoc.lng && cachedLoc.lat) {
+    show(cachedLoc);
+  } else {
+    locLabel.textContent = DEFAULT.name;
+  }
+
+  // 页面从后台切回来时，缓存过期才刷新
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    maybeRelocate();
+    const loc = read(LOC_KEY) || DEFAULT;
+    const cached = read(REPORT_KEY);
+    if (!cached || cached.key !== keyOf(loc) || !fresh(cached)) show(loc);
+  });
+
+  const geoError = (err) => {
+    if (!SECURE) return '定位需 HTTPS（或 localhost）';
+    if (err && err.code === 1) return '定位权限被拒绝，请在地址栏左侧重新允许';
+    if (err && err.code === 2) return '当前位置不可用';
+    if (err && err.code === 3) return '定位超时，稍后再试';
+    return '定位失败';
+  };
+
+  const permState = async () => {
+    if (!navigator.permissions) return 'granted';
+    return navigator.permissions.query({ name: 'geolocation' }).then((p) => p.state).catch(() => 'granted');
+  };
+
+  const geoOnce = () => new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lng: snap(pos.coords.longitude), lat: snap(pos.coords.latitude) }),
+      reject,
+      { timeout: 8000, maximumAge: TTL, enableHighAccuracy: false },
+    );
+  });
+
+  const nameOf = async (loc) => {
+    try {
+      const info = await fetch('/geo?lng=' + snap(loc.lng) + '&lat=' + snap(loc.lat)).then((r) => r.json());
+      return info.name || '';
+    } catch (e) { return ''; }  // 反查失败就用坐标
+  };
+
+  const distanceMeters = (a, b) => {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad;
+    const dLng = (b.lng - a.lng) * rad;
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  };
+
+  // 手动定位：会主动要权限
+  const relocate = async () => {
+    if (!SECURE) { setNote('定位需 HTTPS（或 localhost）'); return; }
+    if (!navigator.geolocation) { setNote('浏览器不支持定位'); return; }
+    const state = await permState();
+    if (state === 'denied') { setNote('定位权限被拒绝，请在地址栏左侧重新允许'); return; }
+
+    setNote('');
+    locLabel.textContent = '定位中…';
+    try {
+      const pos = await geoOnce();
+      const prev = read(LOC_KEY);
+      const moved = !prev || distanceMeters(prev, pos) >= MOVE_METERS;
+      const name = moved ? await nameOf(pos) : prev.name || '';
+      await show({ ...pos, name });
+    } catch (err) {
+      locLabel.textContent = (read(LOC_KEY) || DEFAULT).name;
+      setNote(geoError(err));
+    }
+  };
+
+  // 静默重定位：只在「权限已是 granted」且位置缓存过期时做，用户换地方后刷新即可自动跟上
+  const maybeRelocate = async () => {
+    if (!SECURE || !navigator.geolocation) return;
+    const loc = read(LOC_KEY);
+    if (loc && loc.at && Date.now() - loc.at < LOC_TTL) return;
+    if ((await permState()) !== 'granted') return;   // prompt/denied 不在刷新时打扰
+
+    try {
+      const pos = await geoOnce();
+      if (loc && distanceMeters(loc, pos) < MOVE_METERS) {
+        write(LOC_KEY, { ...loc, at: Date.now() });   // 没挪窝，只刷新时间戳
+        return;
+      }
+      await show({ ...pos, name: await nameOf(pos) });
+    } catch (e) { /* 静默失败，继续用缓存 */ }
+  };
+
+  document.getElementById('relocate').addEventListener('click', (event) => {
+    event.preventDefault();
+    relocate();
+  });
+
+  // 首屏先按缓存渲染，再在后台静默校准位置（换地方后刷新即可跟上）
+  maybeRelocate();
+
+  // 调试/测试入口
+  window.caiyun = { show, relocate, maybeRelocate, read, write };
+})();
+</script>
+</body>
+</html>
